@@ -1,0 +1,82 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: policy-bench-mutate
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  matchConditions:
+    - name: benchmark-namespace
+      expression: request.namespace == "policy-bench"
+    - name: benchmark-subject
+      expression: has(object.metadata.labels) && "policy-bench-subject" in object.metadata.labels && object.metadata.labels["policy-bench-subject"] == "true"
+    - name: annotation-not-already-present
+      expression: "!has(object.metadata.annotations) || !(\"policy-bench-injected\" in object.metadata.annotations)"
+  mutations:
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >-
+          has(object.metadata.annotations)
+            ? [JSONPatch{
+                op: "add",
+                path: "/metadata/annotations/" + jsonpatch.escapeKey("policy-bench-injected"),
+                value: "true"
+              }]
+            : [JSONPatch{
+                op: "add",
+                path: "/metadata/annotations",
+                value: {"policy-bench-injected": "true"}
+              }]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: policy-bench-mutate
+spec:
+  policyName: policy-bench-mutate
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: policy-bench-validate
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  matchConditions:
+    - name: benchmark-namespace
+      expression: request.namespace == "policy-bench"
+    - name: benchmark-subject
+      expression: has(object.metadata.labels) && "policy-bench-subject" in object.metadata.labels && object.metadata.labels["policy-bench-subject"] == "true"
+  validations:
+    - expression: has(object.metadata.annotations) && "policy-bench-team" in object.metadata.annotations && object.metadata.annotations["policy-bench-team"] == "platform"
+      message: policy-bench-team annotation must equal platform
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: policy-bench-validate
+spec:
+  policyName: policy-bench-validate
+  validationActions:
+    - Deny

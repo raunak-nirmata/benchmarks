@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "label": "published-2026-08-19-exact",
+  "source_run": "results/benchmark-20260819-exact",
+  "environment": {
+    "operating_system": "Ubuntu 24.04.4 LTS",
+    "architecture": "aarch64",
+    "cpu_count": "4",
+    "cpu_model": "Neoverse-N1",
+    "total_memory": "7.549GiB",
+    "docker_client_version": "29.1.3",
+    "docker_server_version": "28.2.2",
+    "kind_version": "v0.32.0",
+    "kubectl_version": "v1.36.1",
+    "helm_version": "v3.18.6",
+    "kind_node_image": "kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5",
+    "kyverno_chart_version": "3.8.2",
+    "gatekeeper_chart_version": "3.23.0"
+  },
+  "artifact": {
+    "file_count": 219,
+    "total_bytes": 34891552,
+    "summary_sha256": "54123afec1b82390f73b7264542d6e71ee8067b90dd3b4d218cb1d5aa3be2fbe",
+    "report_sha256": "e2bc43bb5c402aabd67400147aa4d04f4ac29b6a144147d19c03ddf594967479",
+    "tree_sha256_from_repository_root": "5d954c66e92faa2a9d3f78ab733c7ae1fa7f919222a1ffb68a4de7bb35bbc806"
+  },
+  "load_shape": {
+    "trials": 3,
+    "duration_seconds": 60,
+    "target_rps": 200,
+    "concurrency": 128,
+    "requests_per_engine_per_trial": 12000,
+    "warmup_seconds": 15,
+    "warmup_rps": 50,
+    "idle_sample_seconds": 15,
+    "settle_seconds": 15
+  },
+  "engines": {
+    "baseline": {
+      "successful_requests": 36000,
+      "http_latency_ms": {"p50": 4.159140400588512, "p95": 7.603793032467357, "p99": 14.27313260734084},
+      "scheduled_latency_p95_ms": 8.293748553842297,
+      "queue_delay_p95_ms": 0.8706473745405671,
+      "achieved_rps_mean": 199.75922741037698,
+      "trial_http_p95_ms": [5.9360568411648265, 5.7468474842607975, 9.89480493590235],
+      "node": {
+        "cpu_load_mean_cores": 1.10233560028503,
+        "cpu_load_p95_mean_cores": 1.2000953120051623,
+        "cpu_load_minus_idle_cores": 0.893937319931196,
+        "memory_load_mean_bytes": 570110533.9453553,
+        "memory_load_p95_mean_bytes": 576884736.0,
+        "memory_load_minus_idle_bytes": 20339679.54535532
+      }
+    },
+    "native": {
+      "successful_requests": 36000,
+      "http_latency_ms": {"p50": 6.381490267813206, "p95": 12.770897150039637, "p99": 24.378613643348313},
+      "scheduled_latency_p95_ms": 13.72769149020313,
+      "queue_delay_p95_ms": 1.346205081790685,
+      "achieved_rps_mean": 199.66552526118184,
+      "trial_http_p95_ms": [9.55285746604204, 9.028999973088501, 17.51106912270187],
+      "node": {
+        "cpu_load_mean_cores": 1.4424586522530929,
+        "cpu_load_p95_mean_cores": 1.5392508348322373,
+        "cpu_load_minus_idle_cores": 1.22679910465923,
+        "memory_load_mean_bytes": 584002241.0491804,
+        "memory_load_p95_mean_bytes": 590269098.6666666,
+        "memory_load_minus_idle_bytes": 16288631.09362483
+      }
+    },
+    "gatekeeper": {
+      "successful_requests": 36000,
+      "http_latency_ms": {"p50": 8.761199191212654, "p95": 19.72384937107554, "p99": 51.8312944844366},
+      "scheduled_latency_p95_ms": 20.23108517751097,
+      "queue_delay_p95_ms": 1.0056303814053522,
+      "achieved_rps_mean": 199.71045000858302,
+      "trial_http_p95_ms": [21.083598118275404, 19.687703251838627, 18.290544021874666],
+      "node": {
+        "cpu_load_mean_cores": 2.0327907653209683,
+        "cpu_load_p95_mean_cores": 2.1773894250739647,
+        "cpu_load_minus_idle_cores": 1.7885158260535134,
+        "memory_load_mean_bytes": 735785474.7978142,
+        "memory_load_p95_mean_bytes": 743389866.6666666,
+        "memory_load_minus_idle_bytes": 24714413.464480877
+      },
+      "engine_namespace": {"cpu_load_mean_cores": 0.6317591114371585, "memory_load_mean_bytes": 42157867.36612022}
+    },
+    "kyverno": {
+      "successful_requests": 36000,
+      "http_latency_ms": {"p50": 25.033232755959034, "p95": 1198.8626252859824, "p99": 1892.2485550865545},
+      "scheduled_latency_p95_ms": 3935.946795530615,
+      "queue_delay_p95_ms": 3247.4595921114055,
+      "achieved_rps_mean": 196.0548807204673,
+      "trial_http_p95_ms": [66.76195794716473, 758.3577325567597, 1629.044343437998],
+      "node": {
+        "cpu_load_mean_cores": 2.659590435796604,
+        "cpu_load_p95_mean_cores": 3.0448331741202703,
+        "cpu_load_minus_idle_cores": 2.418369085075254,
+        "memory_load_mean_bytes": 1138759601.6612022,
+        "memory_load_p95_mean_bytes": 1163179349.3333333,
+        "memory_load_minus_idle_bytes": 101383522.01675773
+      },
+      "engine_namespace": {"cpu_load_mean_cores": 1.2490337048688525, "memory_load_mean_bytes": 84875722.84153005}
+    }
+  }
+}

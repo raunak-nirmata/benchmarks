@@ -1,0 +1,270 @@
+{
+  "passed": true,
+  "failures": [],
+  "run_dir": "/root/policy-keeper/results/benchmark-20260819-exact",
+  "cell_count": 12,
+  "measured_request_count": 144000,
+  "cells": [
+    {
+      "trial": 1,
+      "engine": "baseline",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 5.9360568411648265,
+      "approximate_achieved_rps": 199.84304689938625
+    },
+    {
+      "trial": 1,
+      "engine": "native",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 9.55285746604204,
+      "approximate_achieved_rps": 199.85474524065867
+    },
+    {
+      "trial": 1,
+      "engine": "gatekeeper",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 21.083598118275404,
+      "approximate_achieved_rps": 199.8584316860291
+    },
+    {
+      "trial": 1,
+      "engine": "kyverno",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 66.76195794716473,
+      "approximate_achieved_rps": 199.82947121899704
+    },
+    {
+      "trial": 2,
+      "engine": "baseline",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 5.7468474842607975,
+      "approximate_achieved_rps": 199.86855699147586
+    },
+    {
+      "trial": 2,
+      "engine": "native",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 9.028999973088501,
+      "approximate_achieved_rps": 199.84868615343194
+    },
+    {
+      "trial": 2,
+      "engine": "gatekeeper",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 19.687703251838627,
+      "approximate_achieved_rps": 199.8214667251574
+    },
+    {
+      "trial": 2,
+      "engine": "kyverno",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 758.3577325567597,
+      "approximate_achieved_rps": 199.82954738292372
+    },
+    {
+      "trial": 3,
+      "engine": "baseline",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 9.89480493590235,
+      "approximate_achieved_rps": 199.9085511439295
+    },
+    {
+      "trial": 3,
+      "engine": "native",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 17.51106912270187,
+      "approximate_achieved_rps": 199.89686021655936
+    },
+    {
+      "trial": 3,
+      "engine": "gatekeeper",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 18.290544021874666,
+      "approximate_achieved_rps": 199.8280619117112
+    },
+    {
+      "trial": 3,
+      "engine": "kyverno",
+      "requests": 12000,
+      "semantic_cases": 180,
+      "http_p95_ms": 1629.044343437998,
+      "approximate_achieved_rps": 188.87103864451242
+    }
+  ],
+  "recomputed": {
+    "baseline": {
+      "http_latency_ms": {
+        "count": 36000,
+        "mean": 4.703214457827723,
+        "p50": 4.159140400588512,
+        "p95": 7.603793032467357,
+        "p99": 14.27313260734084,
+        "max": 56.84487149119377
+      },
+      "scheduled_latency_ms": {
+        "count": 36000,
+        "mean": 5.0051924956238105,
+        "p50": 4.380838014185429,
+        "p95": 8.293748553842297,
+        "p99": 15.483728535473574,
+        "max": 69.70985047519207
+      },
+      "queue_delay_ms": {
+        "count": 36000,
+        "mean": 0.30197803779608673,
+        "p50": 0.1850547268986702,
+        "p95": 0.8706473745405671,
+        "p99": 2.1856522373855163,
+        "max": 33.06389972567558
+      },
+      "node": {
+        "cpu_load_mean": 1.10233560028503,
+        "cpu_load_p95_mean": 1.2000953120051623,
+        "cpu_load_minus_idle": 0.893937319931196,
+        "memory_load_mean": 570110533.9453553,
+        "memory_load_p95_mean": 576884736.0,
+        "memory_load_minus_idle": 20339679.54535532
+      }
+    },
+    "native": {
+      "http_latency_ms": {
+        "count": 36000,
+        "mean": 7.353013860630906,
+        "p50": 6.381490267813206,
+        "p95": 12.770897150039637,
+        "p99": 24.378613643348313,
+        "max": 93.68599392473698
+      },
+      "scheduled_latency_ms": {
+        "count": 36000,
+        "mean": 7.764135560434726,
+        "p50": 6.704994477331638,
+        "p95": 13.72769149020313,
+        "p99": 25.99824072793128,
+        "max": 95.01571580767632
+      },
+      "queue_delay_ms": {
+        "count": 36000,
+        "mean": 0.41112169980381924,
+        "p50": 0.21518580615520477,
+        "p95": 1.346205081790685,
+        "p99": 2.8997402824461522,
+        "max": 48.39930683374405
+      },
+      "node": {
+        "cpu_load_mean": 1.4424586522530929,
+        "cpu_load_p95_mean": 1.5392508348322373,
+        "cpu_load_minus_idle": 1.22679910465923,
+        "memory_load_mean": 584002241.0491804,
+        "memory_load_p95_mean": 590269098.6666666,
+        "memory_load_minus_idle": 16288631.09362483
+      }
+    },
+    "gatekeeper": {
+      "http_latency_ms": {
+        "count": 36000,
+        "mean": 10.814019639665881,
+        "p50": 8.761199191212654,
+        "p95": 19.72384937107554,
+        "p99": 51.8312944844366,
+        "max": 249.04683232307434
+      },
+      "scheduled_latency_ms": {
+        "count": 36000,
+        "mean": 11.132251960173663,
+        "p50": 9.0253297239542,
+        "p95": 20.23108517751097,
+        "p99": 52.68004158511774,
+        "max": 249.15391579270363
+      },
+      "queue_delay_ms": {
+        "count": 36000,
+        "mean": 0.3182323205077814,
+        "p50": 0.17970334738492966,
+        "p95": 1.0056303814053522,
+        "p99": 2.0369702205061984,
+        "max": 34.937161952257156
+      },
+      "node": {
+        "cpu_load_mean": 2.0327907653209683,
+        "cpu_load_p95_mean": 2.1773894250739647,
+        "cpu_load_minus_idle": 1.7885158260535134,
+        "memory_load_mean": 735785474.7978142,
+        "memory_load_p95_mean": 743389866.6666666,
+        "memory_load_minus_idle": 24714413.464480877
+      },
+      "engine_namespace": {
+        "cpu_load_mean": 0.6317591114371585,
+        "memory_load_mean": 42157867.36612022
+      }
+    },
+    "kyverno": {
+      "http_latency_ms": {
+        "count": 36000,
+        "mean": 275.052743286567,
+        "p50": 25.033232755959034,
+        "p95": 1198.8626252859824,
+        "p99": 1892.2485550865545,
+        "max": 3642.9380159825087
+      },
+      "scheduled_latency_ms": {
+        "count": 36000,
+        "mean": 1105.6306609048818,
+        "p50": 25.586075149476528,
+        "p95": 3935.946795530615,
+        "p99": 4574.037070572379,
+        "max": 6257.441841065884
+      },
+      "queue_delay_ms": {
+        "count": 36000,
+        "mean": 830.5779176183148,
+        "p50": 0.5196332931518555,
+        "p95": 3247.4595921114055,
+        "p99": 3482.712747063488,
+        "max": 3634.1581512242556
+      },
+      "node": {
+        "cpu_load_mean": 2.659590435796604,
+        "cpu_load_p95_mean": 3.0448331741202703,
+        "cpu_load_minus_idle": 2.418369085075254,
+        "memory_load_mean": 1138759601.6612022,
+        "memory_load_p95_mean": 1163179349.3333333,
+        "memory_load_minus_idle": 101383522.01675773
+      },
+      "engine_namespace": {
+        "cpu_load_mean": 1.2490337048688525,
+        "memory_load_mean": 84875722.84153005
+      }
+    }
+  },
+  "artifact_checks": {
+    "summary.json": {
+      "actual": "54123afec1b82390f73b7264542d6e71ee8067b90dd3b4d218cb1d5aa3be2fbe",
+      "expected": "54123afec1b82390f73b7264542d6e71ee8067b90dd3b4d218cb1d5aa3be2fbe",
+      "matches": true
+    },
+    "REPORT.md": {
+      "actual": "e2bc43bb5c402aabd67400147aa4d04f4ac29b6a144147d19c03ddf594967479",
+      "expected": "e2bc43bb5c402aabd67400147aa4d04f4ac29b6a144147d19c03ddf594967479",
+      "matches": true
+    }
+  },
+  "verified_published_values": true,
+  "enforced_frozen_artifact_hashes": true,
+  "notes": [
+    "Percentiles use linear interpolation at (N - 1) * q.",
+    "Fresh-cluster creation is established by the orchestration code; the historical result did not record per-cluster UIDs.",
+    "Achieved RPS is checked approximately because requests.csv does not store the final executor timestamp."
+  ]
+}

@@ -1,0 +1,12 @@
+# Admission-only deployment. Gatekeeper audit is not part of the request data
+# path and is disabled to match Kyverno's disabled background processing.
+replicas: 1
+disableAudit: true
+controllerManager:
+  # Kept false because this is the exact value used for the published run.
+  # It is a disclosed limitation: the deployment was not the smallest
+  # possible admission-only Gatekeeper deployment.
+  disableGenerateOperation: false
+  resources:
+    limits: null
+    requests: null

@@ -1,0 +1,19 @@
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: PolicyBenchRequireTeam
+metadata:
+  name: policy-bench-validate
+spec:
+  enforcementAction: deny
+  match:
+    scope: Namespaced
+    namespaces:
+      - policy-bench
+    kinds:
+      - apiGroups:
+          - ""
+        kinds:
+          - Pod
+    labelSelector:
+      matchLabels:
+        policy-bench-subject: "true"
+

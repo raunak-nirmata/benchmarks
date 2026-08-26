@@ -1,0 +1,29 @@
+# Admission-only deployment: optional background, cleanup, and report
+# controllers are disabled so the measurement covers the admission data path.
+admissionController:
+  replicas: 1
+  container:
+    resources:
+      limits: null
+      requests: null
+backgroundController:
+  enabled: false
+cleanupController:
+  enabled: false
+reportsController:
+  enabled: false
+features:
+  admissionReports:
+    enabled: false
+  aggregateReports:
+    enabled: false
+  policyReports:
+    enabled: false
+  validatingAdmissionPolicyReports:
+    enabled: false
+  reporting:
+    validate: false
+    mutate: false
+    mutateExisting: false
+    imageVerify: false
+    generate: false

@@ -1,0 +1,62 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: policy-bench-mutate
+  annotations:
+    pod-policies.kyverno.io/autogen-controllers: none
+spec:
+  admission: true
+  background: false
+  rules:
+    - name: add-injected-annotation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              operations:
+                - CREATE
+                - UPDATE
+              namespaces:
+                - policy-bench
+              selector:
+                matchLabels:
+                  policy-bench-subject: "true"
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            annotations:
+              +(policy-bench-injected): "true"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: policy-bench-validate
+  annotations:
+    pod-policies.kyverno.io/autogen-controllers: none
+spec:
+  admission: true
+  background: false
+  validationFailureAction: Enforce
+  rules:
+    - name: require-team-annotation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              operations:
+                - CREATE
+                - UPDATE
+              namespaces:
+                - policy-bench
+              selector:
+                matchLabels:
+                  policy-bench-subject: "true"
+      validate:
+        failureAction: Enforce
+        message: policy-bench-team annotation must equal platform
+        pattern:
+          metadata:
+            annotations:
+              policy-bench-team: platform

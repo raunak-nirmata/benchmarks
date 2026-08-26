@@ -1,0 +1,22 @@
+apiVersion: mutations.gatekeeper.sh/v1
+kind: AssignMetadata
+metadata:
+  name: policy-bench-mutate
+spec:
+  match:
+    scope: Namespaced
+    namespaces:
+      - policy-bench
+    kinds:
+      - apiGroups:
+          - ""
+        kinds:
+          - Pod
+    labelSelector:
+      matchLabels:
+        policy-bench-subject: "true"
+  location: metadata.annotations.policy-bench-injected
+  parameters:
+    assign:
+      value: "true"
+
