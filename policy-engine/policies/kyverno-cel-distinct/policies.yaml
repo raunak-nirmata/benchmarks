@@ -1,0 +1,102 @@
+# Kyverno CEL policy types expressing the same observable contract as
+# policies/kyverno-cel, batched like policies/kyverno-cel-selectors, but where
+# every rendered copy writes its own annotation as well as the contract one.
+#
+# Why this variant exists: in the selectors variant every copy emits the same
+# patch, so at a policy count of N the first copy adds the annotation and the
+# other N-1 re-add the value that is already there. The engine does full work for
+# each - match, evaluate, build the patch, apply it, re-serialize for the next
+# policy - so engine cost is exercised, but the object never grows and no cluster
+# would be configured that way.
+#
+# Here each copy also writes an annotation named after itself. The mutate policy
+# name is a whole token that render-policies.py rewrites per copy, so copy 003
+# writes "policy-bench-mutate-003" without any extra rendering machinery. At a
+# count of N a matched Pod ends up carrying N distinct new annotations, which is
+# what N mutating policies actually look like, and it grows the object by N nodes
+# rather than leaving it unchanged.
+#
+# The contract (policies/CONTRACT.md) is unchanged: policy-bench-injected is
+# still added when absent and never overwritten, so the same truth table holds
+# and the semantic gate is unmodified. The per-copy annotations are additional
+# and nothing matches on them.
+apiVersion: policies.kyverno.io/v1beta1
+kind: MutatingPolicy
+metadata:
+  name: policy-bench-mutate
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: policy-bench
+    objectSelector:
+      matchLabels:
+        policy-bench-subject: "true"
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  mutations:
+    # Two patches per policy: the contract annotation, re-added with its existing
+    # value so it is never overwritten, and this copy's own annotation.
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >-
+          has(object.metadata.annotations)
+            ? [JSONPatch{
+                op: "add",
+                path: "/metadata/annotations/" + jsonpatch.escapeKey("policy-bench-injected"),
+                value: "policy-bench-injected" in object.metadata.annotations
+                  ? object.metadata.annotations["policy-bench-injected"]
+                  : "true"
+              },
+              JSONPatch{
+                op: "add",
+                path: "/metadata/annotations/" + jsonpatch.escapeKey("policy-bench-mutate"),
+                value: "true"
+              }]
+            : [JSONPatch{
+                op: "add",
+                path: "/metadata/annotations",
+                value: {
+                  "policy-bench-injected": "true",
+                  "policy-bench-mutate": "true"
+                }
+              }]
+---
+apiVersion: policies.kyverno.io/v1beta1
+kind: ValidatingPolicy
+metadata:
+  name: policy-bench-validate
+spec:
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: policy-bench
+    objectSelector:
+      matchLabels:
+        policy-bench-subject: "true"
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  validations:
+    - expression: has(object.metadata.annotations) && "policy-bench-team" in object.metadata.annotations && object.metadata.annotations["policy-bench-team"] == "platform"
+      message: policy-bench-team annotation must equal platform

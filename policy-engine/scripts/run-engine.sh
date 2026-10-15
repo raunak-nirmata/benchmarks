@@ -10,7 +10,7 @@ cluster_name="policy-bench-${engine}"
 kubeconfig="$output_dir/kubeconfig"
 node_name="${cluster_name}-control-plane"
 
-case "$engine" in baseline|kyverno|gatekeeper|native) ;; *) die "unknown engine: $engine" ;; esac
+case "$engine" in baseline|kyverno|kyverno-cel|gatekeeper|native) ;; *) die "unknown engine: $engine" ;; esac
 
 require_command python3
 require_command kubectl
@@ -44,14 +44,19 @@ if [[ "$REQUIRE_EXCLUSIVE_DOCKER" == "true" ]]; then
 fi
 
 python3 "$REPO_ROOT/scripts/verify-isolation.py" \
+  --policy-mode "$POLICY_MODE" \
   --kubeconfig "$kubeconfig" \
   --engine "$engine" \
+  --rendered "$output_dir/rendered/rendered.json" \
   --output "$output_dir/isolation.json"
 
 python3 "$REPO_ROOT/scripts/loadgen.py" \
   --kubeconfig "$kubeconfig" \
   --engine "$engine" \
   --timeout "$REQUEST_TIMEOUT_SECONDS" \
+  --payload-padding-bytes "$PAYLOAD_PADDING_BYTES" \
+  --payload-profile "$PAYLOAD_PROFILE" \
+  --policy-mode "$POLICY_MODE" \
   verify \
   --iterations "$VERIFY_ITERATIONS" \
   --output "$output_dir/equivalence.json"
@@ -82,12 +87,17 @@ docker exec "$node_name" crictl images -o json > "$output_dir/container-images.j
 kubectl_for "$kubeconfig" get --raw /metrics 2>/dev/null \
   | grep -E '^(apiserver_admission_|apiserver_request_duration_seconds|process_|go_memstats_)' \
   > "$output_dir/apiserver-metrics-before.prom" || true
+"$REPO_ROOT/scripts/scrape-engine-metrics.sh" "$engine" "$kubeconfig" \
+  "$output_dir/engine-metrics-before.prom"
 
 log "warmup: ${WARMUP_SECONDS}s at ${WARMUP_RPS} requests/s"
 python3 "$REPO_ROOT/scripts/loadgen.py" \
   --kubeconfig "$kubeconfig" \
   --engine "$engine" \
   --timeout "$REQUEST_TIMEOUT_SECONDS" \
+  --payload-padding-bytes "$PAYLOAD_PADDING_BYTES" \
+  --payload-profile "$PAYLOAD_PROFILE" \
+  --policy-mode "$POLICY_MODE" \
   load \
   --duration "$WARMUP_SECONDS" \
   --rate "$WARMUP_RPS" \
@@ -122,6 +132,9 @@ python3 "$REPO_ROOT/scripts/loadgen.py" \
   --kubeconfig "$kubeconfig" \
   --engine "$engine" \
   --timeout "$REQUEST_TIMEOUT_SECONDS" \
+  --payload-padding-bytes "$PAYLOAD_PADDING_BYTES" \
+  --payload-profile "$PAYLOAD_PROFILE" \
+  --policy-mode "$POLICY_MODE" \
   load \
   --duration "$DURATION_SECONDS" \
   --rate "$TARGET_RPS" \
@@ -138,18 +151,25 @@ python3 "$REPO_ROOT/scripts/loadgen.py" \
   --kubeconfig "$kubeconfig" \
   --engine "$engine" \
   --timeout "$REQUEST_TIMEOUT_SECONDS" \
+  --payload-padding-bytes "$PAYLOAD_PADDING_BYTES" \
+  --payload-profile "$PAYLOAD_PROFILE" \
+  --policy-mode "$POLICY_MODE" \
   verify \
   --iterations "$VERIFY_ITERATIONS" \
   --output "$output_dir/equivalence-after.json"
 
 python3 "$REPO_ROOT/scripts/verify-isolation.py" \
+  --policy-mode "$POLICY_MODE" \
   --kubeconfig "$kubeconfig" \
   --engine "$engine" \
+  --rendered "$output_dir/rendered/rendered.json" \
   --output "$output_dir/isolation-after.json"
 
 kubectl_for "$kubeconfig" get --raw /metrics 2>/dev/null \
   | grep -E '^(apiserver_admission_|apiserver_request_duration_seconds|process_|go_memstats_)' \
   > "$output_dir/apiserver-metrics-after.prom" || true
+"$REPO_ROOT/scripts/scrape-engine-metrics.sh" "$engine" "$kubeconfig" \
+  "$output_dir/engine-metrics-after.prom"
 kubectl_for "$kubeconfig" get pods --all-namespaces -o wide > "$output_dir/pods-after.txt"
 kubectl_for "$kubeconfig" get events --all-namespaces --sort-by=.lastTimestamp > "$output_dir/events-after.txt" || true
 docker stats --no-stream --format '{{json .}}' "$node_name" > "$output_dir/node-docker-stats-after.jsonl"

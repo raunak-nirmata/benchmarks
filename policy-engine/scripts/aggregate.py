@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime
 import json
 import math
 import re
@@ -13,7 +14,26 @@ import sys
 from pathlib import Path
 
 
-ENGINES = ("baseline", "kyverno", "gatekeeper", "native")
+# Canonical order. A run may install a subset; the engines actually used come
+# from the run's effective-config.env.
+# kind names a side-loaded image's repository after the date it was imported, so
+# the same image imported either side of midnight UTC reports two different
+# repoDigests. The digest after the "@" identifies the content; the invented
+# repository name does not, and comparing it reports drift where none exists.
+IMPORT_REPOSITORY = re.compile(r"^.*/import-\d{4}-\d{2}-\d{2}(?=@)")
+
+
+def normalize_digest(digest: str) -> str:
+    return IMPORT_REPOSITORY.sub("kind-imported", digest)
+
+
+KNOWN_ENGINES = ("baseline", "kyverno", "kyverno-cel", "gatekeeper", "native")
+# The arms the article published. A run carrying any other arm is not an
+# article reproduction, whatever else it matches.
+PUBLISHED_ENGINES = ("baseline", "kyverno", "gatekeeper", "native")
+# Engines whose policy evaluation runs in their own namespace, so the engine
+# resource category isolates it from the apiserver.
+WEBHOOK_ENGINES = ("kyverno", "kyverno-cel", "gatekeeper")
 
 
 def percentile(values: list[float], quantile: float) -> float | None:
@@ -46,14 +66,38 @@ def load_json(path: Path) -> dict:
 def resource_category(engine: str, container: dict) -> str | None:
     if container.get("container") == "kube-apiserver":
         return "apiserver"
-    if engine == "kyverno" and container.get("namespace") == "kyverno":
+    if engine in ("kyverno", "kyverno-cel") and container.get("namespace") == "kyverno":
         return "engine"
     if engine == "gatekeeper" and container.get("namespace") == "gatekeeper-system":
         return "engine"
     return None
 
 
-def read_resources(path: Path, engine: str) -> dict[str, dict]:
+# A sample interval this much larger than configured means the clock jumped:
+# the host slept, the VM was suspended, or the sampler was starved. Whatever the
+# cause, the window it covers is not the window that was asked for.
+SAMPLE_GAP_TOLERANCE = 3.0
+
+
+def check_sample_continuity(path: Path, timestamps: list[float], interval: float) -> None:
+    """Refuse samples that span a suspension.
+
+    Nothing else in the run notices one. The request rows still look plausible,
+    because requests that were never issued leave no trace, and a mean taken over
+    a window that silently covers twice its nominal duration is simply wrong.
+    """
+    limit = interval * SAMPLE_GAP_TOLERANCE
+    for index, (earlier, later) in enumerate(zip(timestamps, timestamps[1:]), 1):
+        gap = later - earlier
+        if gap > limit:
+            raise SystemExit(
+                f"resource sampling gap in {path}: {gap:.1f}s between sample "
+                f"{index} and {index + 1}, expected about {interval:.0f}s. "
+                "The host most likely slept during the run; re-run this cell."
+            )
+
+
+def read_resources(path: Path, engine: str, interval: float = 1.0) -> dict[str, dict]:
     series: dict[str, dict[str, list[float]]] = {
         "node": {"cpu": [], "memory": []},
         "apiserver": {"cpu": [], "memory": []},
@@ -62,10 +106,16 @@ def read_resources(path: Path, engine: str) -> dict[str, dict]:
     lines = path.read_text().splitlines()
     if not lines:
         raise SystemExit(f"resource file is empty: {path}")
+    timestamps: list[float] = []
     for line_number, line in enumerate(lines, 1):
         item = json.loads(line)
         if item.get("error"):
             raise SystemExit(f"resource sampler error in {path}:{line_number}: {item['error']}")
+        stamp = item.get("timestamp")
+        if stamp is not None:
+            timestamps.append(
+                datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+            )
         node = item.get("node", {})
         if "memory_working_set_bytes" not in node:
             raise SystemExit(f"node resource sample missing in {path}:{line_number}")
@@ -84,6 +134,7 @@ def read_resources(path: Path, engine: str) -> dict[str, dict]:
         for category in ("apiserver", "engine"):
             series[category]["cpu"].append(aggregate[category]["cpu"])
             series[category]["memory"].append(aggregate[category]["memory"])
+    check_sample_continuity(path, timestamps, interval)
     return {
         category: {
             "cpu_cores": distribution(values["cpu"]),
@@ -120,6 +171,24 @@ def main() -> int:
         if separator:
             decoded = shlex.split(raw_value)
             effective_config[key] = decoded[0] if decoded else ""
+    configured_engines = effective_config.get("ENGINES", "").split()
+    unknown = [engine for engine in configured_engines if engine not in KNOWN_ENGINES]
+    if unknown:
+        raise SystemExit(f"unknown engines in effective-config.env: {', '.join(unknown)}")
+    if "baseline" not in configured_engines:
+        raise SystemExit("effective-config.env must include the baseline engine")
+    engines = tuple(engine for engine in KNOWN_ENGINES if engine in configured_engines)
+    policy_count = int(effective_config.get("POLICY_COUNT", "1"))
+    payload_padding_bytes = int(effective_config.get("PAYLOAD_PADDING_BYTES", "0"))
+    cel_variant = effective_config.get("KYVERNO_CEL_VARIANT", "matchconditions")
+    payload_profile = effective_config.get("PAYLOAD_PROFILE", "minimal")
+    policy_mode = effective_config.get("POLICY_MODE", "both")
+    workload_description = {
+        "both": "mutation and validation together",
+        "validate": "validation only, with no mutating policy installed",
+        "mutate": "mutation only, with no validating policy installed",
+    }[policy_mode]
+    profile = effective_config.get("PROFILE", "exact")
     expected_trial_count = int(effective_config["TRIALS"])
     expected_trial_names = [f"trial-{index}" for index in range(1, expected_trial_count + 1)]
     if [path.name for path in trial_dirs] != expected_trial_names:
@@ -151,7 +220,7 @@ def main() -> int:
             "resource_idle": [],
             "resource_load": [],
         }
-        for engine in ENGINES
+        for engine in engines
     }
     invariant_rows = []
     expected_load_shape = None
@@ -163,7 +232,7 @@ def main() -> int:
     expected_images: dict[str, tuple] = {}
 
     for trial_dir in trial_dirs:
-        for engine in ENGINES:
+        for engine in engines:
             engine_dir = trial_dir / engine
             if not engine_dir.is_dir():
                 raise SystemExit(f"missing benchmark cell: {engine_dir}")
@@ -211,7 +280,7 @@ def main() -> int:
                 sorted(
                     (
                         item.get("id", ""),
-                        tuple(sorted(item.get("repoDigests") or [])),
+                        tuple(sorted(normalize_digest(d) for d in (item.get("repoDigests") or []))),
                         tuple(sorted(item.get("repoTags") or [])),
                     )
                     for item in image_document.get("images", [])
@@ -236,11 +305,15 @@ def main() -> int:
                 expected_checksums = config_checksums
             if config_checksums != expected_checksums:
                 raise SystemExit(f"input configuration drift detected in {engine_dir}")
+            # Payload size joins the load shape: a cell that sent differently
+            # sized objects is not comparable with the others.
+            payload_bytes = latency.get("payload_bytes", 0)
             load_shape = (
                 latency["configured_duration_seconds"],
                 latency["target_rps"],
                 latency["concurrency"],
                 latency["planned_requests"],
+                payload_bytes,
             )
             if expected_load_shape is None:
                 expected_load_shape = load_shape
@@ -274,7 +347,13 @@ def main() -> int:
                         raise SystemExit(f"request index gap in {engine_dir} at {expected_index}")
                     if row["ok"] != "True" or int(row["status"]) != 201:
                         raise SystemExit(f"failed raw request in {engine_dir}: {row}")
-                    expected_mutated = "False" if engine == "baseline" else "True"
+                    # A run that installs no mutating policy must leave the
+                    # object untouched; requiring the annotation there would
+                    # reject a correct result.
+                    mutation_installed = (
+                        engine != "baseline" and policy_mode in ("both", "mutate")
+                    )
+                    expected_mutated = "True" if mutation_installed else "False"
                     if row["mutated"] != expected_mutated:
                         raise SystemExit(f"mutation mismatch in {engine_dir}: {row}")
                     queue_value = float(row["queue_delay_ms"])
@@ -288,10 +367,15 @@ def main() -> int:
                     pooled[engine]["scheduled"].append(float(row["scheduled_latency_ms"]))
                     pooled[engine]["queue"].append(float(row["queue_delay_ms"]))
             pooled[engine]["trials"].append(latency)
-            pooled[engine]["resource_idle"].append(read_resources(engine_dir / "resources-idle.jsonl", engine))
-            pooled[engine]["resource_load"].append(read_resources(engine_dir / "resources-load.jsonl", engine))
+            sample_interval = float(effective_config.get("SAMPLE_INTERVAL_SECONDS", 1))
+            pooled[engine]["resource_idle"].append(
+                read_resources(engine_dir / "resources-idle.jsonl", engine, sample_interval)
+            )
+            pooled[engine]["resource_load"].append(
+                read_resources(engine_dir / "resources-load.jsonl", engine, sample_interval)
+            )
 
-    missing = [engine for engine in ENGINES if not pooled[engine]["trials"]]
+    missing = [engine for engine in engines if not pooled[engine]["trials"]]
     if missing:
         raise SystemExit(f"missing engine results: {', '.join(missing)}")
 
@@ -336,11 +420,42 @@ def main() -> int:
                     "load_p95_mean_across_trials": statistics.fmean(load_p95s),
                     "load_minus_idle": load_mean - idle_mean,
                 }
+        # CPU work per unit of admission traffic. Mean cores over the load phase
+        # times the load duration is CPU-seconds spent serving the known request
+        # count, which makes cells with different policy counts comparable and is
+        # far less host-sensitive than latency.
+        requests_per_trial = expected_load_shape[3]
+        load_seconds = expected_load_shape[0]
+        for category in ("node", "apiserver", "engine"):
+            cpu = engine_summary["resources"][category]["cpu_cores"]
+            engine_summary["resources"][category]["cpu_seconds_per_1k_requests"] = (
+                cpu["load_mean"] * load_seconds / requests_per_trial * 1000.0
+            )
+            engine_summary["resources"][category]["cpu_seconds_per_1k_requests_over_idle"] = (
+                cpu["load_minus_idle"] * load_seconds / requests_per_trial * 1000.0
+            )
         summary[engine] = engine_summary
 
     result = {
         "run_directory": str(run_dir),
         "effective_config": effective_config,
+        "profile": profile,
+        "policy_count": policy_count,
+        "payload_padding_bytes": payload_padding_bytes,
+        "kyverno_cel_variant": cel_variant,
+        "payload_profile": payload_profile,
+        "payload_bytes": payload_bytes,
+        "policy_mode": policy_mode,
+        "engines_installed": list(engines),
+        "article_reproduction_shape": profile == "exact"
+        and set(configured_engines) == set(PUBLISHED_ENGINES)
+        and policy_count == 1
+        and payload_padding_bytes == 0
+        and cel_variant == "matchconditions"
+        and payload_profile == "minimal"
+        and policy_mode == "both"
+        and not effective_config.get("KYVERNO_CHART_PATH")
+        and not effective_config.get("KYVERNO_IMAGE_TAG"),
         "execution_host": execution_host,
         "load_shape": {
             "duration_seconds": expected_load_shape[0],
@@ -360,6 +475,14 @@ def main() -> int:
         "",
         "All figures in this report are measured outputs from this run. The baseline is the same pinned Kubernetes cluster without a policy engine.",
         "",
+    ]
+    if not result["article_reproduction_shape"]:
+        lines += [
+            "> This run is **not** an article reproduction: it changed the engine set, the policy",
+            "> count, or the Kyverno build. Compare it only with another run of the same shape.",
+            "",
+        ]
+    lines += [
         "## Execution environment",
         "",
         f"- Host: {execution_host['operating_system']}, {execution_host['architecture']}",
@@ -371,21 +494,26 @@ def main() -> int:
         "## Test shape",
         "",
         f"- Trials: {len(trial_dirs)} per engine",
+        f"- Engines: {', '.join(engines)}",
+        f"- Policy pairs installed per engine: {policy_count}",
+        f"- Payload padding added to each Pod: {payload_padding_bytes} bytes",
+        f"- Kyverno CEL policy variant: {cel_variant}",
+        f"- Pod payload: {payload_profile} profile, {payload_bytes} bytes serialized",
         f"- Offered load: {expected_load_shape[1]} requests/s for {expected_load_shape[0]} seconds",
         f"- Exact requests: {expected_load_shape[3]} per engine per trial",
         f"- Maximum client concurrency: {expected_load_shape[2]}",
         f"- Kubernetes node image: `{effective_config['KIND_NODE_IMAGE']}`",
-        f"- Kyverno chart: {effective_config['KYVERNO_CHART_VERSION']}",
+        f"- Kyverno chart: {effective_config.get('KYVERNO_CHART_PATH') or effective_config['KYVERNO_CHART_VERSION']}",
         f"- Gatekeeper chart: {effective_config['GATEKEEPER_CHART_VERSION']}",
         "- Policy operation scope: Pod CREATE and UPDATE; semantic probes exercise both",
-        "- Request: dry-run CREATE of the same labelled Pod, with valid team annotation and mutation absent",
+        f"- Request: dry-run CREATE of the same labelled Pod, with valid team annotation and mutation absent (POLICY_MODE={policy_mode})",
         "",
         "## End-to-end admission latency",
         "",
         "| Engine | Successful requests | p50 ms | p95 ms | p99 ms | max ms | p95 vs baseline | Queue p95 ms | Achieved RPS |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for engine in ENGINES:
+    for engine in engines:
         item = summary[engine]
         latency = item["http_latency_ms"]
         lines.append(
@@ -404,7 +532,7 @@ def main() -> int:
         ]
     )
     for trial_index in range(len(trial_dirs)):
-        for engine in ENGINES:
+        for engine in engines:
             item = summary[engine]["trial_runs"][trial_index]
             http = item["http_latency_ms"]
             lines.append(
@@ -420,7 +548,7 @@ def main() -> int:
             "|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
-    for engine in ENGINES:
+    for engine in engines:
         node = summary[engine]["resources"]["node"]
         cpu = node["cpu_cores"]
         memory = node["memory_bytes"]
@@ -437,15 +565,43 @@ def main() -> int:
             "|---|---|---:|---:|---:|---:|",
         ]
     )
-    for engine in ("kyverno", "gatekeeper"):
+    for engine in WEBHOOK_ENGINES:
+        if engine not in engines:
+            continue
         resource = summary[engine]["resources"]["engine"]
         lines.append(
             f"| {engine} | all containers in engine namespace | {fmt(resource['cpu_cores']['load_mean'], 3)} | {fmt(resource['cpu_cores']['load_p95_mean_across_trials'], 3)} | {fmt(mib(resource['memory_bytes']['load_mean']))} | {fmt(mib(resource['memory_bytes']['load_p95_mean_across_trials']))} |"
         )
-    native_resource = summary["native"]["resources"]["apiserver"]
-    lines.append(
-        f"| native | kube-apiserver (policy is in-process; not separable) | {fmt(native_resource['cpu_cores']['load_mean'], 3)} | {fmt(native_resource['cpu_cores']['load_p95_mean_across_trials'], 3)} | {fmt(mib(native_resource['memory_bytes']['load_mean']))} | {fmt(mib(native_resource['memory_bytes']['load_p95_mean_across_trials']))} |"
+    if "native" in engines:
+        native_resource = summary["native"]["resources"]["apiserver"]
+        lines.append(
+            f"| native | kube-apiserver (policy is in-process; not separable) | {fmt(native_resource['cpu_cores']['load_mean'], 3)} | {fmt(native_resource['cpu_cores']['load_p95_mean_across_trials'], 3)} | {fmt(mib(native_resource['memory_bytes']['load_mean']))} | {fmt(mib(native_resource['memory_bytes']['load_p95_mean_across_trials']))} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## CPU work per admission request",
+            "",
+            "CPU-seconds spent per 1,000 measured requests, from the load-phase mean core",
+            "count. The engine column is the engine namespace only, so it isolates policy",
+            "evaluation from apiserver work; it is the comparison to use when the same engine",
+            "is measured at different policy counts or across builds.",
+            "",
+            "| Engine | Node CPU s/1k | Node CPU s/1k over idle | Engine CPU s/1k | Engine CPU s/1k over idle |",
+            "|---|---:|---:|---:|---:|",
+        ]
     )
+    for engine in engines:
+        node = summary[engine]["resources"]["node"]
+        engine_resource = summary[engine]["resources"]["engine"]
+        has_engine_namespace = engine in WEBHOOK_ENGINES
+        lines.append(
+            f"| {engine} | {fmt(node['cpu_seconds_per_1k_requests'], 3)} "
+            f"| {fmt(node['cpu_seconds_per_1k_requests_over_idle'], 3)} "
+            f"| {fmt(engine_resource['cpu_seconds_per_1k_requests'], 3) if has_engine_namespace else 'n/a'} "
+            f"| {fmt(engine_resource['cpu_seconds_per_1k_requests_over_idle'], 3) if has_engine_namespace else 'n/a'} |"
+        )
 
     lines.extend(
         [
@@ -469,7 +625,7 @@ def main() -> int:
             "- The native policy executes inside kube-apiserver, so its policy-only CPU and memory cannot be separated. Total node deltas are the fairest cross-engine resource comparison.",
             "- Webhook engines pay local TLS and AdmissionReview serialization costs; native CEL does not. That architectural cost is intentionally included.",
             "- Dry-run removes scheduler, image pull, workload startup, and object cleanup noise. It also does not measure background scanning or audit controllers, which are disabled.",
-            "- The measured workload combines mutation and validation and contains matched, valid Pod CREATE requests only. UPDATE and rejection behavior are correctness probes, not performance workloads.",
+            f"- The measured workload is {workload_description} and contains matched, valid Pod CREATE requests only. UPDATE and rejection behavior are correctness probes, not performance workloads.",
             "- Gatekeeper used its chart-generated fail-open webhooks (Ignore; 1 s mutation and 3 s validation timeouts), while Kyverno used Fail/10 s and native policies used Fail. No measured request failed, but failure semantics were not normalized.",
             "- These are three 60-second fresh-cluster replicates on one shared four-core host. Treat the cluster trial, not each request, as the experimental unit.",
             "- The published client metric starts when the worker begins preparing the request and ends after reading the response; it includes small client-side Pod construction and JSON serialization costs.",

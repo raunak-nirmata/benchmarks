@@ -21,3 +21,21 @@ The following limitations matter when interpreting or reproducing it:
 - The historical effective configuration named Docker CLI 28.3.3, but `host.txt` proves the client actually used was 29.1.3 because the bootstrap preferred an already-installed system client. The article reports Docker Engine 28.2.2, which is correct. The shareable profile records the actual client and server separately.
 
 For a confirmatory study, first run a rate sweep and choose a common rate at which every engine meets a predeclared queue-delay and achieved-throughput gate. Use separate validate-only, mutate-only, and combined scenarios; normalize failure policies and timeouts; use balanced randomized blocks with more fresh-cluster replicates; and place the load generator on separate, controlled CPUs or a second host.
+
+## One policy pair per arm
+
+The published profile installs exactly one mutate and one validate policy per
+engine. Costs an engine pays per matched policy, rather than per request, are
+therefore invisible here: an engine that prepares its evaluation context once per
+policy instead of once per request looks identical to one that does not. The
+numbers describe a single-policy admission path and should not be read as a
+per-policy scaling claim in either direction.
+
+`POLICY_COUNT` in `config/benchmark.env` installs N identical copies per arm for
+that question; see `SCALING.md`. Such a run is not a reproduction of the
+published profile and is labelled accordingly.
+
+Latency is also the wrong instrument for small per-policy savings. A dry-run Pod
+CREATE through the apiserver and back is milliseconds; a saved context
+conversion is microseconds. Use the CPU-work-per-request table, which attributes
+work to the engine's own namespace.

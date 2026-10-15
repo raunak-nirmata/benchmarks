@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import argparse
 import base64
-import copy
 import concurrent.futures
+import copy
 import csv
 import http.client
 import json
@@ -145,12 +145,21 @@ class KubernetesClient:
         return self._request("DELETE", f"/api/v1/namespaces/{namespace}/pods/{name}")
 
 
+# Annotation used to grow the admitted object. It is inert with respect to the
+# contract: no arm matches on it, mutates it, or reads it. Real clusters carry
+# payloads of exactly this shape, for example
+# kubectl.kubernetes.io/last-applied-configuration.
+PADDING_ANNOTATION = "policy-bench-padding"
+
+
 def pod_object(
     name: str,
     *,
     subject: bool = True,
     team: str | None = "platform",
     injected: str | None = None,
+    padding_bytes: int = 0,
+    profile: str = "minimal",
 ) -> dict:
     labels = {"policy-bench-subject": "true"} if subject else {"control": "true"}
     annotations: dict[str, str] = {}
@@ -158,6 +167,9 @@ def pod_object(
         annotations["policy-bench-team"] = team
     if injected is not None:
         annotations["policy-bench-injected"] = injected
+    # Zero padding leaves the object byte-identical to the published profile.
+    if padding_bytes > 0:
+        annotations[PADDING_ANNOTATION] = "x" * padding_bytes
     metadata: dict[str, object] = {"name": name, "labels": labels}
     if annotations:
         metadata["annotations"] = annotations
@@ -165,12 +177,123 @@ def pod_object(
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": metadata,
-        "spec": {
-            "automountServiceAccountToken": False,
-            "containers": [{"name": "pause", "image": "registry.k8s.io/pause:3.10"}],
-            "restartPolicy": "Never",
-        },
+        "spec": pod_spec(profile),
     }
+
+
+# The published spec: one pause container and nothing else. An admitted object of
+# this shape is about 300 bytes serialized, which is far below anything a workload
+# controller produces.
+MINIMAL_SPEC: dict = {
+    "automountServiceAccountToken": False,
+    "containers": [{"name": "pause", "image": "registry.k8s.io/pause:3.10"}],
+    "restartPolicy": "Never",
+}
+
+
+def realistic_spec() -> dict:
+    """A Pod spec of the shape a Deployment produces for an ordinary service.
+
+    Nothing here is chosen for its size. It is the set of fields a normal
+    workload carries: two containers, resource requests and limits, both probes,
+    a PSS-restricted security context, a projected service-account token, config
+    and secret mounts, and environment variables. The resulting object size is
+    whatever that adds up to, and the report states it.
+    """
+
+    def container(name: str, image: str, port: int) -> dict:
+        return {
+            "name": name,
+            "image": image,
+            "imagePullPolicy": "IfNotPresent",
+            "ports": [{"name": "http", "containerPort": port, "protocol": "TCP"}],
+            "env": [
+                {"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
+                {"name": "POD_NAMESPACE", "valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}}},
+                {"name": "LOG_LEVEL", "value": "info"},
+                {"name": "UPSTREAM_URL", "value": "http://backend.policy-bench.svc.cluster.local:8080"},
+            ],
+            "resources": {
+                "requests": {"cpu": "100m", "memory": "128Mi"},
+                "limits": {"cpu": "500m", "memory": "512Mi"},
+            },
+            "livenessProbe": {
+                "httpGet": {"path": "/healthz", "port": "http"},
+                "initialDelaySeconds": 10,
+                "periodSeconds": 10,
+                "timeoutSeconds": 1,
+                "failureThreshold": 3,
+            },
+            "readinessProbe": {
+                "httpGet": {"path": "/readyz", "port": "http"},
+                "initialDelaySeconds": 5,
+                "periodSeconds": 5,
+                "timeoutSeconds": 1,
+                "failureThreshold": 3,
+            },
+            "volumeMounts": [
+                {"name": "config", "mountPath": "/etc/app", "readOnly": True},
+                {"name": "secrets", "mountPath": "/etc/app/secrets", "readOnly": True},
+                {"name": "tmp", "mountPath": "/tmp"},
+            ],
+            "securityContext": {
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": True,
+                "runAsNonRoot": True,
+                "runAsUser": 1000,
+                "capabilities": {"drop": ["ALL"]},
+                "seccompProfile": {"type": "RuntimeDefault"},
+            },
+            "terminationMessagePath": "/dev/termination-log",
+            "terminationMessagePolicy": "File",
+        }
+
+    return {
+        "serviceAccountName": "policy-bench-app",
+        "automountServiceAccountToken": False,
+        "restartPolicy": "Never",
+        "terminationGracePeriodSeconds": 30,
+        "dnsPolicy": "ClusterFirst",
+        "securityContext": {
+            "runAsNonRoot": True,
+            "runAsUser": 1000,
+            "fsGroup": 2000,
+            "seccompProfile": {"type": "RuntimeDefault"},
+        },
+        "containers": [
+            container("app", "registry.k8s.io/pause:3.10", 8080),
+            container("sidecar", "registry.k8s.io/pause:3.10", 9090),
+        ],
+        "volumes": [
+            {"name": "config", "configMap": {"name": "policy-bench-config", "defaultMode": 420}},
+            {"name": "secrets", "secret": {"secretName": "policy-bench-secret", "defaultMode": 420}},
+            {"name": "tmp", "emptyDir": {}},
+        ],
+        "affinity": {
+            "podAntiAffinity": {
+                "preferredDuringSchedulingIgnoredDuringExecution": [
+                    {
+                        "weight": 100,
+                        "podAffinityTerm": {
+                            "topologyKey": "kubernetes.io/hostname",
+                            "labelSelector": {"matchLabels": {"app": "policy-bench-app"}},
+                        },
+                    }
+                ]
+            }
+        },
+        "tolerations": [
+            {"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}
+        ],
+    }
+
+
+def pod_spec(profile: str) -> dict:
+    if profile == "minimal":
+        return copy.deepcopy(MINIMAL_SPEC)
+    if profile == "realistic":
+        return realistic_spec()
+    raise SystemExit("unknown payload profile: %s" % profile)
 
 
 def verify_case(
@@ -262,18 +385,91 @@ def verify_update_case(
     }
 
 
+# The UPDATE probes read the stored Pod and write it back. A 409 means the object
+# changed in between, which is an optimistic-concurrency artifact rather than a
+# policy outcome, so the probe is retried against a fresh read before it counts
+# as a failure.
+UPDATE_CONFLICT_RETRIES = 4
+
+
+def verify_update_case_with_reread(
+    client: KubernetesClient,
+    engine: str,
+    case_name: str,
+    namespace: str,
+    name: str,
+    build_payload,
+    expect_admitted: bool,
+    expect_injected,
+) -> dict:
+    result = None
+    for attempt in range(UPDATE_CONFLICT_RETRIES):
+        get_status, stored, get_raw = client.get_pod(namespace, name)
+        if get_status != 200:
+            raise RuntimeError(f"update seed GET returned {get_status}: {get_raw[:500]}")
+        payload = build_payload(copy.deepcopy(stored))
+        expected = expect_injected(payload) if callable(expect_injected) else expect_injected
+        result = verify_update_case(
+            client, engine, case_name, namespace, payload, expect_admitted, expected
+        )
+        if result["status"] != 409:
+            return result
+        result["conflict_retries"] = attempt + 1
+    return result
+
+
+def case_expectations(engine: str, policy_mode: str) -> dict[str, tuple[bool, str | None]]:
+    """Expected (admitted, injected annotation) per verification case.
+
+    Admission is decided by the validating half and the annotation by the
+    mutating half, so a run installing only one of them expects a different
+    outcome from a run installing both. Separated out from the case list because
+    getting one cell of this table wrong silently turns the semantic gate into
+    either a false failure or a rubber stamp.
+    """
+    mutating = engine != "baseline" and policy_mode in ("both", "mutate")
+    validating = engine != "baseline" and policy_mode in ("both", "validate")
+    # What a matched, admitted Pod carries once the mutating half has run.
+    injected = "true" if mutating else None
+    # An invalid Pod is rejected only when the validating half is installed; if it
+    # is admitted instead, the mutating half still applies to it.
+    invalid_admitted = not validating
+    invalid_injected = injected if invalid_admitted else None
+    return {
+        "matched-valid": (True, injected),
+        "matched-missing-team": (invalid_admitted, invalid_injected),
+        "matched-wrong-team": (invalid_admitted, invalid_injected),
+        # Not matched by either half, so untouched in every mode.
+        "unmatched-label": (True, None),
+        "unmatched-namespace": (True, None),
+        # Already annotated: the contract forbids overwriting it.
+        "no-overwrite": (True, "false"),
+    }
+
+
 def run_verify(args: argparse.Namespace, client: KubernetesClient) -> int:
-    policy_enabled = args.engine != "baseline"
+    # The contract has two halves and a run may install only one of them, so the
+    # expected outcome of a case depends on which half is present, not on whether
+    # the arm has any policy at all.
+    mutation_enabled = args.engine != "baseline" and args.policy_mode in ("both", "mutate")
+    validation_enabled = args.engine != "baseline" and args.policy_mode in ("both", "validate")
+    padding = args.payload_padding_bytes
+    profile = args.payload_profile
     cases = []
     for iteration in range(args.iterations):
         suffix = f"{iteration}-{uuid.uuid4().hex[:8]}"
+        expectations = case_expectations(args.engine, args.policy_mode)
+        pods = {
+            "matched-valid": ("policy-bench", pod_object(f"pb-valid-{suffix}", padding_bytes=padding, profile=profile)),
+            "matched-missing-team": ("policy-bench", pod_object(f"pb-missing-{suffix}", team=None, padding_bytes=padding, profile=profile)),
+            "matched-wrong-team": ("policy-bench", pod_object(f"pb-wrong-{suffix}", team="other", padding_bytes=padding, profile=profile)),
+            "unmatched-label": ("policy-bench", pod_object(f"pb-label-{suffix}", subject=False, team=None, padding_bytes=padding, profile=profile)),
+            "unmatched-namespace": ("policy-bench-control", pod_object(f"pb-namespace-{suffix}", team=None, padding_bytes=padding, profile=profile)),
+            "no-overwrite": ("policy-bench", pod_object(f"pb-overwrite-{suffix}", injected="false", padding_bytes=padding, profile=profile)),
+        }
         definitions = [
-            ("matched-valid", "policy-bench", pod_object(f"pb-valid-{suffix}"), True, "true" if policy_enabled else None),
-            ("matched-missing-team", "policy-bench", pod_object(f"pb-missing-{suffix}", team=None), not policy_enabled, None),
-            ("matched-wrong-team", "policy-bench", pod_object(f"pb-wrong-{suffix}", team="other"), not policy_enabled, None),
-            ("unmatched-label", "policy-bench", pod_object(f"pb-label-{suffix}", subject=False, team=None), True, None),
-            ("unmatched-namespace", "policy-bench-control", pod_object(f"pb-namespace-{suffix}", team=None), True, None),
-            ("no-overwrite", "policy-bench", pod_object(f"pb-overwrite-{suffix}", injected="false"), True, "false"),
+            (case_name, namespace, pod, *expectations[case_name])
+            for case_name, (namespace, pod) in pods.items()
         ]
         for case_name, namespace, pod, admitted, injected in definitions:
             cases.append(
@@ -281,7 +477,7 @@ def run_verify(args: argparse.Namespace, client: KubernetesClient) -> int:
             )
 
         update_name = f"pb-update-{suffix}"
-        update_seed = pod_object(update_name)
+        update_seed = pod_object(update_name, padding_bytes=padding, profile=profile)
         # An explicit nonexistent node bypasses scheduler writes, keeping the
         # resourceVersion stable while dry-run UPDATE behavior is probed.
         update_seed["spec"]["nodeName"] = "policy-bench-no-such-node"
@@ -292,59 +488,60 @@ def run_verify(args: argparse.Namespace, client: KubernetesClient) -> int:
             if not 200 <= create_status < 300:
                 raise RuntimeError(f"update seed returned {create_status}: {create_raw[:500]}")
 
-            get_status, stored, get_raw = client.get_pod("policy-bench", update_name)
-            if get_status != 200:
-                raise RuntimeError(f"update seed GET returned {get_status}: {get_raw[:500]}")
-            mutation_update = copy.deepcopy(stored)
-            mutation_annotations = mutation_update["metadata"].setdefault("annotations", {})
-            mutation_annotations.pop("policy-bench-injected", None)
+            def drop_injected(payload: dict) -> dict:
+                payload["metadata"].setdefault("annotations", {}).pop(
+                    "policy-bench-injected", None
+                )
+                return payload
+
+            def set_wrong_team(payload: dict) -> dict:
+                payload["metadata"].setdefault("annotations", {})[
+                    "policy-bench-team"
+                ] = "other"
+                return payload
+
+            def set_injected_false(payload: dict) -> dict:
+                payload["metadata"].setdefault("annotations", {})[
+                    "policy-bench-injected"
+                ] = "false"
+                return payload
+
             cases.append(
-                verify_update_case(
+                verify_update_case_with_reread(
                     client,
                     args.engine,
                     "update-matched-valid",
                     "policy-bench",
-                    mutation_update,
+                    update_name,
+                    drop_injected,
                     True,
-                    "true" if policy_enabled else None,
+                    "true" if mutation_enabled else None,
                 )
             )
 
-            get_status, stored, get_raw = client.get_pod("policy-bench", update_name)
-            if get_status != 200:
-                raise RuntimeError(f"update seed GET returned {get_status}: {get_raw[:500]}")
-            invalid_update = copy.deepcopy(stored)
-            invalid_update["metadata"].setdefault("annotations", {})[
-                "policy-bench-team"
-            ] = "other"
             cases.append(
-                verify_update_case(
+                verify_update_case_with_reread(
                     client,
                     args.engine,
                     "update-wrong-team",
                     "policy-bench",
-                    invalid_update,
-                    not policy_enabled,
-                    None if policy_enabled else invalid_update["metadata"]["annotations"].get(
-                        "policy-bench-injected"
-                    ),
+                    update_name,
+                    set_wrong_team,
+                    not validation_enabled,
+                    lambda payload: None
+                    if validation_enabled
+                    else payload["metadata"]["annotations"].get("policy-bench-injected"),
                 )
             )
 
-            get_status, stored, get_raw = client.get_pod("policy-bench", update_name)
-            if get_status != 200:
-                raise RuntimeError(f"update seed GET returned {get_status}: {get_raw[:500]}")
-            overwrite_update = copy.deepcopy(stored)
-            overwrite_update["metadata"].setdefault("annotations", {})[
-                "policy-bench-injected"
-            ] = "false"
             cases.append(
-                verify_update_case(
+                verify_update_case_with_reread(
                     client,
                     args.engine,
                     "update-no-overwrite",
                     "policy-bench",
-                    overwrite_update,
+                    update_name,
+                    set_injected_false,
                     True,
                     "false",
                 )
@@ -357,7 +554,7 @@ def run_verify(args: argparse.Namespace, client: KubernetesClient) -> int:
                     "admitted": False,
                     "expected_admitted": True,
                     "injected": None,
-                    "expected_injected": "true" if policy_enabled else None,
+                    "expected_injected": "true" if mutation_enabled else None,
                     "elapsed_ms": 0,
                     "transport_error": repr(exc),
                     "passed": False,
@@ -392,9 +589,16 @@ def request_once(
     index: int,
     scheduled: float,
     run_token: str,
+    padding_bytes: int = 0,
+    profile: str = "minimal",
+    expect_mutation: bool = True,
 ) -> dict:
     actual_start = time.perf_counter()
-    pod = pod_object(f"pb-{engine[:3]}-{run_token}-{index}")
+    pod = pod_object(
+        f"pb-{engine[:3]}-{run_token}-{index}",
+        padding_bytes=padding_bytes,
+        profile=profile,
+    )
     try:
         status, response, raw = client.create_pod("policy-bench", pod)
         transport_error = ""
@@ -405,7 +609,9 @@ def request_once(
     annotations = response.get("metadata", {}).get("annotations", {})
     mutated = annotations.get("policy-bench-injected") == "true"
     admitted = 200 <= status < 300
-    ok = admitted and (engine == "baseline" or mutated)
+    # A validate-only run installs no mutating policy, so a missing annotation is
+    # the correct result rather than a failed request.
+    ok = admitted and (not expect_mutation or mutated)
     error_text = transport_error or ("" if admitted else response.get("message", raw)[:500])
     if admitted and not ok:
         error_text = "admitted response did not contain expected mutation"
@@ -441,7 +647,17 @@ def run_load(args: argparse.Namespace, client: KubernetesClient) -> int:
             if remaining > 0:
                 time.sleep(remaining)
             futures.append(
-                executor.submit(request_once, client, args.engine, index, scheduled, run_token)
+                executor.submit(
+                    request_once,
+                    client,
+                    args.engine,
+                    index,
+                    scheduled,
+                    run_token,
+                    args.payload_padding_bytes,
+                    args.payload_profile,
+                    args.engine != "baseline" and args.policy_mode in ("both", "mutate"),
+                )
             )
         results = [future.result() for future in concurrent.futures.as_completed(futures)]
     completed_at = time.perf_counter()
@@ -491,6 +707,10 @@ def run_load(args: argparse.Namespace, client: KubernetesClient) -> int:
         "configured_duration_seconds": args.duration,
         "target_rps": args.rate,
         "concurrency": args.concurrency,
+        "payload_padding_bytes": args.payload_padding_bytes,
+        "payload_profile": args.payload_profile,
+        "policy_mode": args.policy_mode,
+        "payload_bytes": len(json.dumps(pod_object("pb-size-probe", padding_bytes=args.payload_padding_bytes, profile=args.payload_profile))),
         "request_timeout_seconds": args.timeout,
         "planned_requests": planned,
         "completed_requests": len(results),
@@ -513,8 +733,16 @@ def run_load(args: argparse.Namespace, client: KubernetesClient) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--kubeconfig", required=True)
-    parser.add_argument("--engine", choices=("baseline", "kyverno", "gatekeeper", "native"), required=True)
+    parser.add_argument("--engine", choices=("baseline", "kyverno", "kyverno-cel", "gatekeeper", "native"), required=True)
     parser.add_argument("--timeout", type=float, default=30)
+    # Bytes of inert annotation added to every Pod this client sends. 0 keeps the
+    # published payload. Both the measured requests and the semantic probes use
+    # it, so the contract is verified at the size being measured.
+    parser.add_argument("--payload-padding-bytes", type=int, default=0)
+    # Shape of the Pod the client sends. "minimal" is the published one-container
+    # Pod; "realistic" is the shape a Deployment produces for an ordinary service.
+    parser.add_argument("--payload-profile", choices=("minimal", "realistic"), default="minimal")
+    parser.add_argument("--policy-mode", choices=("both", "validate", "mutate"), default="both")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     verify = subparsers.add_parser("verify")

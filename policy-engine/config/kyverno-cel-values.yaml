@@ -1,0 +1,40 @@
+# Values for the kyverno-cel arm: identical to config/kyverno-values.yaml
+# (admission-only deployment, controllers and reporting disabled), plus the
+# generate*AdmissionPolicy features turned off.
+#
+# Chart 3.8.2 defaults generateValidatingAdmissionPolicy to true. With it on,
+# Kyverno converts a CEL ValidatingPolicy into a native ValidatingAdmissionPolicy
+# that kube-apiserver evaluates in-process, which would make this arm measure the
+# same path as the native arm instead of Kyverno's own engine. Disabling both
+# generators keeps enforcement in Kyverno's admission webhook.
+admissionController:
+  replicas: 1
+  container:
+    resources:
+      limits: null
+      requests: null
+backgroundController:
+  enabled: false
+cleanupController:
+  enabled: false
+reportsController:
+  enabled: false
+features:
+  admissionReports:
+    enabled: false
+  aggregateReports:
+    enabled: false
+  policyReports:
+    enabled: false
+  validatingAdmissionPolicyReports:
+    enabled: false
+  generateValidatingAdmissionPolicy:
+    enabled: false
+  generateMutatingAdmissionPolicy:
+    enabled: false
+  reporting:
+    validate: false
+    mutate: false
+    mutateExisting: false
+    imageVerify: false
+    generate: false

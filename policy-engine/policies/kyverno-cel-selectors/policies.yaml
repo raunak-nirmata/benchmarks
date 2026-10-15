@@ -1,0 +1,96 @@
+# Kyverno CEL policy types expressing the same observable contract as
+# policies/kyverno-cel, but with the matching moved from matchConditions into
+# matchConstraints selectors.
+#
+# Why this variant exists: Kyverno's webhook controller classifies a CEL policy
+# as fine-grained, and gives it its own webhook endpoint, when it declares
+# matchConditions (also when matchPolicy is Exact, or timeoutSeconds is set) -
+# see buildWebhookRules in pkg/controllers/webhook/validating.go. Every other
+# policy is "basic" and shares one webhook whose path lists every policy name, so
+# a single AdmissionReview evaluates all of them in one engine call.
+#
+# The matchConditions variant therefore produces N webhook calls carrying one
+# policy each; this variant produces one call carrying N policies. Only the
+# second shape exercises the engine's per-request policy loop.
+#
+# namespaceSelector and objectSelector are not fine-grained triggers, and they
+# reproduce the contract's matching exactly: the namespace label is applied by
+# Kubernetes itself, and the subject label is the one the other arms match on.
+# The contract (policies/CONTRACT.md) is unchanged, including the no-overwrite
+# row - see the mutation comment below.
+apiVersion: policies.kyverno.io/v1beta1
+kind: MutatingPolicy
+metadata:
+  name: policy-bench-mutate
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: policy-bench
+    objectSelector:
+      matchLabels:
+        policy-bench-subject: "true"
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  mutations:
+    # The matchConditions variant skips the patch when the annotation is already
+    # present. A match condition would make this policy fine-grained, so the
+    # add-only behaviour moves into the value instead: an existing annotation is
+    # re-added with the value it already has, which leaves the object unchanged.
+    # That keeps the no-overwrite contract row and stays type-safe, since both
+    # branches produce one JSONPatch.
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >-
+          has(object.metadata.annotations)
+            ? [JSONPatch{
+                op: "add",
+                path: "/metadata/annotations/" + jsonpatch.escapeKey("policy-bench-injected"),
+                value: "policy-bench-injected" in object.metadata.annotations
+                  ? object.metadata.annotations["policy-bench-injected"]
+                  : "true"
+              }]
+            : [JSONPatch{
+                op: "add",
+                path: "/metadata/annotations",
+                value: {"policy-bench-injected": "true"}
+              }]
+---
+apiVersion: policies.kyverno.io/v1beta1
+kind: ValidatingPolicy
+metadata:
+  name: policy-bench-validate
+spec:
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: policy-bench
+    objectSelector:
+      matchLabels:
+        policy-bench-subject: "true"
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  validations:
+    - expression: has(object.metadata.annotations) && "policy-bench-team" in object.metadata.annotations && object.metadata.annotations["policy-bench-team"] == "platform"
+      message: policy-bench-team annotation must equal platform

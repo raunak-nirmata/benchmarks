@@ -43,6 +43,24 @@ From this directory:
 ./scripts/run-benchmark.sh results/reproduction-$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
+For a run shape other than the published one - more policies per arm, a
+different payload, an engine A/B - use a named preset rather than setting the
+knobs by hand:
+
+```bash
+PRESET=five-arm-batched-n16 ./scripts/run-benchmark.sh results/batched-n16
+```
+
+To measure the validating and mutating halves separately as well as together,
+in one invocation:
+
+```bash
+PRESET=five-arm-validate-n16 ./scripts/run-mode-sweep.sh results/sweep
+```
+
+See [`config/presets/README.md`](config/presets/README.md) for the list and
+[`SCALING.md`](SCALING.md) for what each knob does.
+
 The exact suite takes about 33 minutes on the original four-core host. It creates and deletes 12 kind clusters sequentially. Do not run other CPU-, memory-, disk-, or Docker-intensive workloads at the same time.
 
 The run produces:
@@ -98,6 +116,13 @@ The performance workload exercises `CREATE` only. `UPDATE`, invalid, unmatched, 
 - Whole-node usage is the primary resource comparison. Policy-only native resource usage cannot be separated from other API-server work.
 
 More detail is in [`METHODOLOGY.md`](METHODOLOGY.md) and [`LIMITATIONS.md`](LIMITATIONS.md).
+
+## Policy-count scaling and engine A/B runs
+
+The published profile installs one mutate and one validate policy per arm, which cannot show
+costs that grow with the number of policies matching one object, and cannot compare two builds
+of the same engine. `POLICY_COUNT` and `PROFILE` cover both, and any run that uses them is
+marked as not an article reproduction. See [`SCALING.md`](SCALING.md).
 
 ## Tests
 

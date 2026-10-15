@@ -12,6 +12,45 @@ docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
 
 run_id=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 run_dir=${1:-"$REPO_ROOT/results/$run_id"}
+
+read -r -a engines <<< "$ENGINES"
+engine_count=${#engines[@]}
+# The four published-reference engines are always required exactly once.
+# kyverno-cel (Kyverno's CEL policy types) is an optional adjacent arm.
+count_engine() {
+  local target="$1" matches=0 configured_engine
+  for configured_engine in "${engines[@]}"; do
+    [[ "$configured_engine" == "$target" ]] && matches=$((matches + 1))
+  done
+  echo "$matches"
+}
+case "$PROFILE" in
+  exact)
+    # The published reference needs all four engines, each exactly once, and no
+    # others. An extra arm changes nothing about the four published cells, but it
+    # would let the run still be labelled an article reproduction while measuring
+    # an engine the article never ran.
+    for required_engine in baseline kyverno gatekeeper native; do
+      [[ "$(count_engine "$required_engine")" -eq 1 ]] \
+        || die "PROFILE=exact requires ENGINES to contain $required_engine exactly once"
+    done
+    for configured_engine in "${engines[@]}"; do
+      [[ " baseline kyverno gatekeeper native " == *" $configured_engine "* ]] \
+        || die "PROFILE=exact does not allow the $configured_engine arm; use PROFILE=scaling"
+    done
+    ;;
+  scaling)
+    # A/B work on one engine. baseline stays mandatory: it is the
+    # policy-engine-free floor every comparison is expressed against.
+    [[ "$(count_engine baseline)" -eq 1 ]] \
+      || die "PROFILE=scaling requires ENGINES to contain baseline exactly once"
+    log "PROFILE=scaling: this run is not an article reproduction"
+    ;;
+  *)
+    die "PROFILE must be exact or scaling, got: $PROFILE"
+    ;;
+esac
+
 if [[ -d "$run_dir" ]] && [[ -n "$(find "$run_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
   die "result directory is not empty: $run_dir"
 fi
@@ -40,6 +79,19 @@ mkdir -p "$run_dir"
   printf 'REQUIRE_EXCLUSIVE_DOCKER=%q\n' "$REQUIRE_EXCLUSIVE_DOCKER"
   printf 'TRIALS=%q\n' "$TRIALS"
   printf 'ENGINES=%q\n' "$ENGINES"
+  printf 'POLICY_COUNT=%q\n' "$POLICY_COUNT"
+  printf 'PAYLOAD_PADDING_BYTES=%q\n' "$PAYLOAD_PADDING_BYTES"
+  printf 'KYVERNO_CEL_VARIANT=%q\n' "$KYVERNO_CEL_VARIANT"
+  printf 'PAYLOAD_PROFILE=%q\n' "$PAYLOAD_PROFILE"
+  printf 'POLICY_MODE=%q\n' "$POLICY_MODE"
+  printf 'PROFILE=%q\n' "$PROFILE"
+  printf 'PRESET=%q\n' "$PRESET"
+  printf 'KYVERNO_CHART_PATH=%q\n' "$KYVERNO_CHART_PATH"
+  printf 'KYVERNO_IMAGE_REGISTRY=%q\n' "$KYVERNO_IMAGE_REGISTRY"
+  printf 'KYVERNO_IMAGE_REPOSITORY=%q\n' "$KYVERNO_IMAGE_REPOSITORY"
+  printf 'KYVERNO_IMAGE_TAG=%q\n' "$KYVERNO_IMAGE_TAG"
+  printf 'KYVERNO_INIT_IMAGE_REPOSITORY=%q\n' "$KYVERNO_INIT_IMAGE_REPOSITORY"
+  printf 'KYVERNO_INIT_IMAGE_TAG=%q\n' "$KYVERNO_INIT_IMAGE_TAG"
 } > "$run_dir/effective-config.env"
 
 docker ps --no-trunc > "$run_dir/docker-containers-before.txt"
@@ -51,17 +103,30 @@ fi
 
 printf 'trial\tposition\tengine\n' > "$run_dir/trial-order.tsv"
 
-read -r -a engines <<< "$ENGINES"
-engine_count=${#engines[@]}
-[[ "$engine_count" -eq 4 ]] || die "ENGINES must contain baseline, kyverno, gatekeeper, and native exactly once"
-for required_engine in baseline kyverno gatekeeper native; do
-  matches=0
-  for configured_engine in "${engines[@]}"; do
-    [[ "$configured_engine" == "$required_engine" ]] && matches=$((matches + 1))
-  done
-  [[ "$matches" -eq 1 ]] || die "ENGINES must contain $required_engine exactly once"
+for known_engine in baseline kyverno kyverno-cel gatekeeper native; do
+  [[ "$(count_engine "$known_engine")" -le 1 ]] || die "ENGINES lists $known_engine more than once"
+done
+for configured_engine in "${engines[@]}"; do
+  case "$configured_engine" in
+    baseline|kyverno|kyverno-cel|gatekeeper|native) ;;
+    *) die "unknown engine in ENGINES: $configured_engine" ;;
+  esac
 done
 [[ "$TRIALS" =~ ^[1-9][0-9]*$ ]] || die "TRIALS must be a positive integer"
+[[ "$POLICY_COUNT" =~ ^[1-9][0-9]*$ ]] || die "POLICY_COUNT must be a positive integer"
+[[ "$PAYLOAD_PADDING_BYTES" =~ ^[0-9]+$ ]] || die "PAYLOAD_PADDING_BYTES must be a non-negative integer"
+case "$PAYLOAD_PROFILE" in
+  minimal|realistic) ;;
+  *) die "PAYLOAD_PROFILE must be minimal or realistic" ;;
+esac
+case "$POLICY_MODE" in
+  both|validate|mutate) ;;
+  *) die "POLICY_MODE must be both, validate, or mutate" ;;
+esac
+case "$KYVERNO_CEL_VARIANT" in
+  matchconditions|selectors|distinct) ;;
+  *) die "KYVERNO_CEL_VARIANT must be matchconditions, selectors, or distinct" ;;
+esac
 
 log "benchmark run $run_id"
 log "results: $run_dir"
@@ -80,8 +145,19 @@ python3 "$REPO_ROOT/scripts/aggregate.py" "$run_dir"
 python3 "$REPO_ROOT/scripts/audit-raw-results.py" "$run_dir" \
   --reference "$REPO_ROOT/reference/published-2026-08-19.json" \
   --output "$run_dir/RAW-AUDIT.json"
-python3 "$REPO_ROOT/scripts/compare-results.py" \
-  "$REPO_ROOT/reference/published-2026-08-19.json" \
-  "$run_dir/summary.json" \
-  --output "$run_dir/COMPARISON.md"
+if [[ "$PROFILE" == "exact" ]] && [[ "$POLICY_COUNT" -eq 1 ]]; then
+  python3 "$REPO_ROOT/scripts/compare-results.py" \
+    "$REPO_ROOT/reference/published-2026-08-19.json" \
+    "$run_dir/summary.json" \
+    --output "$run_dir/COMPARISON.md"
+else
+  {
+    printf '# Not comparable with the published reference\n\n'
+    printf 'This run used PROFILE=%s and POLICY_COUNT=%s.\n' "$PROFILE" "$POLICY_COUNT"
+    printf 'The frozen reference is a four-engine run at one policy pair per arm,\n'
+    printf 'so a comparison against it would be meaningless. Compare this run with\n'
+    printf 'another run of the same profile and policy count instead.\n'
+  } > "$run_dir/COMPARISON.md"
+  log "skipped reference comparison: PROFILE=$PROFILE, POLICY_COUNT=$POLICY_COUNT"
+fi
 log "report: $run_dir/REPORT.md"

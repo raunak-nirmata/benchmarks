@@ -27,8 +27,45 @@ kind create cluster \
   --kubeconfig "$kubeconfig" \
   --wait 5m
 
+# A locally built Kyverno image has to be inside the node before Helm runs: the
+# cell creates its own cluster, so there is no other moment to load it. Only the
+# Kyverno arms use these, and a missing image fails here rather than as an
+# ImagePullBackOff three minutes into a Helm wait.
+if [[ "$engine" == "kyverno" || "$engine" == "kyverno-cel" ]]; then
+  load_image() {
+    local image=$1
+    docker image inspect "$image" >/dev/null 2>&1 \
+      || die "image not found in the local Docker daemon: $image"
+    log "loading $image into $cluster_name"
+    kind load docker-image "$image" --name "$cluster_name"
+  }
+  registry_prefix=""
+  [[ -n "$KYVERNO_IMAGE_REGISTRY" ]] && registry_prefix="$KYVERNO_IMAGE_REGISTRY/"
+  if [[ -n "$KYVERNO_IMAGE_REPOSITORY" ]] && [[ -n "$KYVERNO_IMAGE_TAG" ]]; then
+    load_image "${registry_prefix}${KYVERNO_IMAGE_REPOSITORY}:${KYVERNO_IMAGE_TAG}"
+  fi
+  if [[ -n "$KYVERNO_INIT_IMAGE_REPOSITORY" ]] && [[ -n "$KYVERNO_INIT_IMAGE_TAG" ]]; then
+    load_image "${registry_prefix}${KYVERNO_INIT_IMAGE_REPOSITORY}:${KYVERNO_INIT_IMAGE_TAG}"
+  fi
+fi
+
 kubectl_for "$kubeconfig" create namespace policy-bench
 kubectl_for "$kubeconfig" create namespace policy-bench-control
+# The realistic payload names a service account, a config map, and a secret. The
+# apiserver's ServiceAccount admission plugin rejects a Pod whose service account
+# does not exist, so these have to be present before any request is sent. They are
+# created only for that profile, leaving the published profile's cluster state
+# untouched.
+if [[ "$PAYLOAD_PROFILE" == "realistic" ]]; then
+  for namespace in policy-bench policy-bench-control; do
+    kubectl_for "$kubeconfig" create serviceaccount policy-bench-app -n "$namespace"
+    kubectl_for "$kubeconfig" create configmap policy-bench-config -n "$namespace" \
+      --from-literal=app.conf="log_level=info"
+    kubectl_for "$kubeconfig" create secret generic policy-bench-secret -n "$namespace" \
+      --from-literal=token=placeholder
+  done
+fi
+
 kubectl_for "$kubeconfig" wait --for=condition=Ready nodes --all --timeout=2m
 
 printf '%s\n' "$cluster_name" > "$output_dir/cluster-name.txt"

@@ -1,0 +1,81 @@
+# Kyverno CEL policy types (policies.kyverno.io), evaluated by Kyverno's own
+# engine. These implement the same observable contract as the legacy Kyverno
+# ClusterPolicy arm and the native VAP/MAP arm (see policies/CONTRACT.md):
+#   - match Pod CREATE/UPDATE in namespace policy-bench with label
+#     policy-bench-subject=true
+#   - mutate: add annotation policy-bench-injected=true only when absent
+#   - validate: require annotation policy-bench-team=platform, else deny with
+#     the exact contract message
+#
+# The companion config/kyverno-cel-values.yaml disables
+# generateValidatingAdmissionPolicy so these policies are enforced by Kyverno's
+# admission webhook rather than being converted into native ValidatingAdmission
+# policies (which would instead measure the in-process kube-apiserver path).
+apiVersion: policies.kyverno.io/v1beta1
+kind: MutatingPolicy
+metadata:
+  name: policy-bench-mutate
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  matchConditions:
+    - name: benchmark-namespace
+      expression: request.namespace == "policy-bench"
+    - name: benchmark-subject
+      expression: has(object.metadata.labels) && "policy-bench-subject" in object.metadata.labels && object.metadata.labels["policy-bench-subject"] == "true"
+    - name: annotation-not-already-present
+      expression: "!has(object.metadata.annotations) || !(\"policy-bench-injected\" in object.metadata.annotations)"
+  mutations:
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >-
+          has(object.metadata.annotations)
+            ? [JSONPatch{
+                op: "add",
+                path: "/metadata/annotations/" + jsonpatch.escapeKey("policy-bench-injected"),
+                value: "true"
+              }]
+            : [JSONPatch{
+                op: "add",
+                path: "/metadata/annotations",
+                value: {"policy-bench-injected": "true"}
+              }]
+---
+apiVersion: policies.kyverno.io/v1beta1
+kind: ValidatingPolicy
+metadata:
+  name: policy-bench-validate
+spec:
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  matchConditions:
+    - name: benchmark-namespace
+      expression: request.namespace == "policy-bench"
+    - name: benchmark-subject
+      expression: has(object.metadata.labels) && "policy-bench-subject" in object.metadata.labels && object.metadata.labels["policy-bench-subject"] == "true"
+  validations:
+    - expression: has(object.metadata.annotations) && "policy-bench-team" in object.metadata.annotations && object.metadata.annotations["policy-bench-team"] == "platform"
+      message: policy-bench-team annotation must equal platform

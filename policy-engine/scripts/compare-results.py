@@ -117,6 +117,20 @@ def main() -> int:
 
     reference = json.loads(Path(args.reference).read_text())
     candidate = json.loads(Path(args.candidate_summary).read_text())
+    # The frozen reference is a four-engine run at one policy pair per arm. A run
+    # of any other shape is a different experiment, not a reproduction of it.
+    candidate_policy_count = candidate.get("policy_count", 1)
+    if candidate_policy_count != 1:
+        raise SystemExit(
+            f"candidate ran {candidate_policy_count} policy pairs per engine; the reference "
+            "ran 1, so the two are not comparable"
+        )
+    missing = [engine for engine in ENGINES if engine not in candidate.get("engines", {})]
+    if missing:
+        raise SystemExit(
+            f"candidate did not install {', '.join(missing)}; the reference comparison needs "
+            "all four published engines"
+        )
     checks = profile_checks(reference, candidate)
     metric_rows = []
     for engine in ENGINES:

@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 
-ENGINES = ("baseline", "native", "gatekeeper", "kyverno")
+# Canonical order; a run may install a subset, taken from its effective config.
+KNOWN_ENGINES = ("baseline", "native", "gatekeeper", "kyverno", "kyverno-cel")
 
 
 def percentile(values: list[float], quantile: float) -> float:
@@ -61,7 +62,7 @@ def file_sha256(path: Path) -> str:
 def resource_category(engine: str, container: dict[str, Any]) -> str | None:
     if container.get("container") == "kube-apiserver":
         return "apiserver"
-    if engine == "kyverno" and container.get("namespace") == "kyverno":
+    if engine in ("kyverno", "kyverno-cel") and container.get("namespace") == "kyverno":
         return "engine"
     if engine == "gatekeeper" and container.get("namespace") == "gatekeeper-system":
         return "engine"
@@ -153,14 +154,18 @@ def main() -> int:
 
     failures: list[str] = []
     cells: list[dict[str, Any]] = []
+    configured = config.get("ENGINES", "").split()
+    engines = tuple(engine for engine in KNOWN_ENGINES if engine in configured)
+    if not engines:
+        engines = KNOWN_ENGINES
     pooled = {
         engine: {"http": [], "scheduled": [], "queue": [], "idle": [], "load": []}
-        for engine in ENGINES
+        for engine in engines
     }
     checksum_corpus: tuple[str, ...] | None = None
 
     for trial in range(1, trial_count + 1):
-        for engine in ENGINES:
+        for engine in engines:
             cell = run_dir / f"trial-{trial}" / engine
             if not cell.is_dir():
                 failures.append(f"missing cell: {cell}")
@@ -285,7 +290,7 @@ def main() -> int:
                 failures.append(f"audit error in {cell}: {exc}")
 
     recomputed: dict[str, Any] = {}
-    for engine in ENGINES:
+    for engine in engines:
         data = pooled[engine]
         if not data["http"]:
             continue
