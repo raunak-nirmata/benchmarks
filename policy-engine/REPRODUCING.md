@@ -81,9 +81,8 @@ repository on your Mac, clone it again here rather than using the mounted copy.
 
 ```bash
 cd ~                 # /home/<you>.linux inside the VM, not /Users/<you>
-git clone https://github.com/raunak-nirmata/benchmarks.git
+git clone https://github.com/merdincz/benchmarks.git
 cd benchmarks/policy-engine
-git checkout feat/policy-count-scaling-axis
 ./scripts/bootstrap-tools.sh
 ```
 
