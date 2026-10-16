@@ -47,12 +47,22 @@ sudo apt-get install -y docker.io git python3 curl
 sudo usermod -aG docker "$USER"
 ```
 
-Log out and back in (`exit`, then `limactl shell policy-bench`) so the group
-membership applies, then check:
+Group membership does not apply to a session that is already open, and leaving
+with `exit` is often not enough because Lima reuses the connection. Restart the
+VM:
 
 ```bash
+exit
+limactl stop policy-bench
+limactl start policy-bench
+limactl shell policy-bench
 docker info >/dev/null && echo ok
 ```
+
+`newgrp docker` works too if you would rather not restart. Either way, confirm
+with `id -nG | tr ' ' '\n' | grep docker` before continuing - without it every
+Docker call fails with `permission denied while trying to connect to the Docker
+API at unix:///var/run/docker.sock`.
 
 **Keep the host awake for the whole run.** A sleeping laptop suspends the VM
 mid-measurement. The harness detects the resulting gap in its resource samples
@@ -64,11 +74,26 @@ caffeinate -d
 
 ## 2. Get the harness and its tools
 
+**Clone inside the VM's own filesystem, not into the mounted macOS home.** Lima
+mounts your Mac home read-only, so a run started from `/Users/<you>/...` fails
+once it tries to create `.tools/` or write `results/`. If you already have the
+repository on your Mac, clone it again here rather than using the mounted copy.
+
 ```bash
+cd ~                 # /home/<you>.linux inside the VM, not /Users/<you>
 git clone https://github.com/raunak-nirmata/benchmarks.git
 cd benchmarks/policy-engine
 git checkout feat/policy-count-scaling-axis
 ./scripts/bootstrap-tools.sh
+```
+
+Results then live inside the VM. To copy a finished run back to the Mac, from a
+Mac shell:
+
+```bash
+limactl shell policy-bench -- bash -lc \
+  'cd ~/benchmarks/policy-engine/results/validate-n16 && tar cf - summary.json REPORT.md' \
+  > /tmp/result.tar && tar xf /tmp/result.tar -C ~/Desktop/
 ```
 
 `bootstrap-tools.sh` downloads pinned kind, kubectl, and helm into
